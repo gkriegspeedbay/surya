@@ -53,6 +53,14 @@ class TableRecEncoderDecoderModel(S3DownloaderMixin, SuryaPreTrainedModel):
         self.encoder.config = self.config.encoder
         self.decoder.config = self.config.decoder
 
+        # TableRecEncoderDecoderModel is the top-level class from_pretrained
+        # is called on (surya/table_rec/loader.py); without this, transformers
+        # >= 5.0's _finalize_model_loading crashes on a missing
+        # all_tied_weights_keys attribute (only set by post_init()). This call
+        # was missing even under transformers 4.x -- it just wasn't fatal
+        # there. See huggingface/transformers#46620.
+        self.post_init()
+
     def get_encoder(self):
         return self.encoder
 

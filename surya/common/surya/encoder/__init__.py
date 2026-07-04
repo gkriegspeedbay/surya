@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
+from surya.common.transformers_compat import copy_ as hf_init_copy_
 from surya.common.pretrained import SuryaPreTrainedModel
 from surya.common.surya.encoder.config import SuryaEncoderConfig
 from surya.common.xla import get_nearest_pad
@@ -77,9 +78,27 @@ class Qwen2_5_VisionPatchEmbed(nn.Module):
 class Qwen2_5_VisionRotaryEmbedding(nn.Module):
     def __init__(self, dim: int, theta: float = 10000.0) -> None:
         super().__init__()
-        self.inv_freq = 1.0 / (
-            theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim)
+        # dim/theta stored (and inv_freq converted from a plain attribute to
+        # a real registered buffer) so this survives transformers >= 5.0's
+        # meta-device from_pretrained -- as a bare attribute it isn't visited
+        # by state_dict/buffer machinery at all and stays an uninitialized
+        # meta tensor (hard crash on first use) rather than a checkpointed or
+        # recomputed value. See huggingface/transformers#46620.
+        self.dim = dim
+        self.theta = theta
+        self.rope_type = "default"
+        self.config = None  # PreTrainedModel._init_weights's RotaryEmbedding
+        # branch calls rope_fn(module.config) unconditionally; unused here.
+        inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
+
+    def compute_default_rope_parameters(self, config=None):
+        inv_freq = 1.0 / (
+            self.theta
+            ** (torch.arange(0, self.dim, 2, dtype=torch.float) / self.dim)
         )
+        return inv_freq, 1.0
 
     def forward(self, seqlen: int) -> torch.Tensor:
         seq = torch.arange(seqlen, device="cpu", dtype=self.inv_freq.dtype)
@@ -640,6 +659,20 @@ class Qwen2_5_VLPreTrainedModel(SuryaPreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+        elif "RotaryEmbedding" in module.__class__.__name__ and hasattr(
+            module, "original_inv_freq"
+        ):
+            # This override replaces PreTrainedModel._init_weights entirely
+            # (no super() call), so the base class's own RotaryEmbedding
+            # auto-recompute branch never runs -- inv_freq is persistent=False
+            # and has nothing in the checkpoint to fall back on, so without
+            # this branch it stays an uninitialized meta tensor after
+            # from_pretrained under transformers >= 5.0. Verified bit-exact
+            # against a fresh computation (see huggingface/transformers#46620).
+            rope_fn = module.compute_default_rope_parameters
+            buffer_value, _ = rope_fn(getattr(module, "config", None))
+            hf_init_copy_(module.inv_freq, buffer_value)
+            hf_init_copy_(module.original_inv_freq, buffer_value)
 
 
 class Qwen2_5_VisionTransformerPretrainedModel(Qwen2_5_VLPreTrainedModel):

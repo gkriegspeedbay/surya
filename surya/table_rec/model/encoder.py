@@ -34,6 +34,28 @@ class DonutSwinModel(DonutSwinPreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
+    def get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked=False):
+        # transformers >= 5.0 removed ModuleUtilsMixin.get_head_mask (and
+        # _convert_head_mask_to_5d). Vendor the upstream implementation so
+        # the forward pass works on both 4.x and 5.x. At inference
+        # head_mask is None, so this returns [None] * num_hidden_layers;
+        # the conversion branch preserves behavior if a real head_mask is
+        # ever supplied. See huggingface/transformers#46620.
+        if head_mask is not None:
+            if head_mask.dim() == 1:
+                head_mask = (
+                    head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                )
+                head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+            elif head_mask.dim() == 2:
+                head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.to(dtype=self.dtype)
+            if is_attention_chunked is True:
+                head_mask = head_mask.unsqueeze(-1)
+        else:
+            head_mask = [None] * num_hidden_layers
+        return head_mask
+
     def forward(
         self,
         pixel_values: Optional[torch.FloatTensor] = None,

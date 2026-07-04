@@ -104,7 +104,12 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
     _supports_static_cache = True
     _supports_attention_backend = True
     main_input_name = "input_ids"
-    _tied_weights_keys = ["lm_head.weight"]
+    # transformers >= 5.0 changed _tied_weights_keys from a plain list of
+    # names to a {target: source} mapping (get_expanded_tied_weights_keys
+    # does `tied_mapping.keys()`, which fails on a list). lm_head is tied to
+    # the token embedder per _tie_weights() below.
+    # See huggingface/transformers#46620.
+    _tied_weights_keys = {"lm_head.weight": "embedder.token_embed.weight"}
 
     def __init__(
         self,
@@ -160,11 +165,32 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
                 ]
             )
 
-    def tie_weights(self):
-        self._tie_weights()
+        # SuryaModel is the top-level class from_pretrained is called on
+        # (surya/foundation/loader.py); without this, transformers >= 5.0's
+        # _finalize_model_loading crashes on a missing all_tied_weights_keys
+        # attribute (only set by post_init()) and tie_weights() never runs,
+        # silently leaving lm_head untied from the token embedder. This call
+        # was missing even under transformers 4.x -- it just wasn't fatal
+        # there. See huggingface/transformers#46620.
+        self.post_init()
+
+    def tie_weights(self, **kwargs):
+        # transformers >= 5.0's PreTrainedModel.init_weights() calls
+        # self.tie_weights(recompute_mapping=False), and removed
+        # _tie_or_clone_weights entirely -- tying is now performed
+        # automatically by the base class from the _tied_weights_keys dict
+        # above (get_expanded_tied_weights_keys). Delegate to it there;
+        # keep the old manual path for transformers < 5.
+        # See huggingface/transformers#46620.
+        import transformers
+
+        if int(transformers.__version__.split(".")[0]) >= 5:
+            super().tie_weights(**kwargs)
+        else:
+            self._tie_weights()
 
     def _tie_weights(self):
-        # Tie weights of lm head and token embedder
+        # transformers < 5.0 path only.
         self._tie_or_clone_weights(self.lm_head, self.embedder.token_embed)
 
     def get_output_embeddings(self) -> nn.Module:

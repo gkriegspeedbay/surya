@@ -10,6 +10,7 @@ from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import BaseModelOutputWithNoAttention
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 
+from surya.common.transformers_compat import copy_ as hf_init_copy_
 from surya.common.pretrained import SuryaPreTrainedModel
 from surya.common.xla import mark_step
 
@@ -59,11 +60,28 @@ class SuryaADETRDecoderRotaryEmbedding(nn.Module):
         super().__init__()
         self.dim = dim
         self.base = base
+        self.rope_type = "default"
+        self.config = None  # PreTrainedModel._init_weights's RotaryEmbedding
+        # branch calls rope_fn(module.config) unconditionally -- this fn
+        # ignores the arg (dim/base are already captured above) but the
+        # attribute must exist.
         inv_freq = 1.0 / (
             self.base
             ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim)
         )
         self.register_buffer("inv_freq", tensor=inv_freq, persistent=False)
+        self.original_inv_freq = self.inv_freq
+
+    def compute_default_rope_parameters(self, config=None):
+        """persistent=False, so inv_freq has nothing in the checkpoint to
+        fall back on -- this is what _init_weights (below) calls to
+        recompute it after transformers >= 5.0's meta-device from_pretrained.
+        See huggingface/transformers#46620."""
+        inv_freq = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim)
+        )
+        return inv_freq, 1.0
 
     @torch.no_grad()
     # Copied from transformers.models.gemma.modeling_gemma.GemmaRotaryEmbedding.forward with Gemma->SuryaADETRDecoder
@@ -588,6 +606,34 @@ class SuryaADETRDecoderPreTrainedModel(SuryaPreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=self.config.init_std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+        elif "RotaryEmbedding" in module.__class__.__name__ and hasattr(
+            module, "original_inv_freq"
+        ):
+            # This override replaces PreTrainedModel._init_weights entirely
+            # (no super() call), so the base class's own RotaryEmbedding
+            # auto-recompute branch never runs -- inv_freq is persistent=False
+            # and has nothing in the checkpoint to fall back on, so without
+            # this branch it stays an uninitialized meta tensor after
+            # from_pretrained under transformers >= 5.0. Verified bit-exact
+            # against a fresh computation (see huggingface/transformers#46620).
+            rope_fn = module.compute_default_rope_parameters
+            buffer_value, _ = rope_fn(getattr(module, "config", None))
+            hf_init_copy_(module.inv_freq, buffer_value)
+            hf_init_copy_(module.original_inv_freq, buffer_value)
+        elif isinstance(module, SuryaADETRDecoderModel) and hasattr(
+            module, "normalizer"
+        ):
+            # SuryaADETRDecoderModel.__init__ registers a persistent=False
+            # "normalizer" buffer (config.hidden_size ** 0.5). Unused anywhere
+            # in this codebase's forward() today (confirmed: no reader), but
+            # left uninitialized (a meta tensor) after transformers >= 5.0's
+            # meta-device from_pretrained it can still trip unrelated
+            # operations (.to(), state_dict(), deepcopy). Recompute it the
+            # same way __init__ does. See huggingface/transformers#46620.
+            hf_init_copy_(
+                module.normalizer,
+                torch.tensor(module.config.hidden_size**0.5, dtype=torch.float32),
+            )
 
     def _setup_cache(self, config, batch, device, dtype):
         layers = getattr(self, "model", self).layers
@@ -611,7 +657,10 @@ class SuryaADETRDecoderPreTrainedModel(SuryaPreTrainedModel):
     def _tie_weights(self):
         pass
 
-    def tie_weights(self):
+    def tie_weights(self, **kwargs):
+        # transformers >= 5.0's PreTrainedModel.init_weights() calls
+        # self.tie_weights(recompute_mapping=False) -- accept and ignore
+        # new kwargs for forward compat. See huggingface/transformers#46620.
         pass
 
 

@@ -147,9 +147,11 @@ class S3DownloaderMixin:
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         # Allow loading models directly from the hub, or using s3
         if not pretrained_model_name_or_path.startswith(cls.s3_prefix):
-            return super().from_pretrained(
+            result = super().from_pretrained(
                 pretrained_model_name_or_path, *args, **kwargs
             )
+            cls._materialize_weights_if_needed(result, pretrained_model_name_or_path)
+            return result
 
         local_path = cls.get_local_path(pretrained_model_name_or_path)
         pretrained_model_name_or_path = pretrained_model_name_or_path.replace(
@@ -179,4 +181,46 @@ class S3DownloaderMixin:
                     )
                     raise e  # Reraise exception after max retries
 
-        return super().from_pretrained(local_path, *args, **kwargs)
+        result = super().from_pretrained(local_path, *args, **kwargs)
+        cls._materialize_weights_if_needed(result, local_path)
+        return result
+
+    @staticmethod
+    def _materialize_weights_if_needed(result, local_path: str) -> None:
+        """Repair transformers >= 5.0's silent weight-load failure on
+        surya's custom (vendored) model classes.
+
+        transformers 5.x's mandatory meta-device from_pretrained path
+        silently fails to materialize checkpoint weights into these
+        models -- it reports a clean load (no missing/unexpected keys,
+        no error) while leaving every parameter at its random init,
+        which collapses model outputs. Loading the local single-file
+        safetensors checkpoint directly materializes them correctly.
+
+        Scoped narrowly so nothing else changes:
+          - transformers < 5: no-op (4.x already loads weights eagerly),
+            so 4.x behavior is byte-for-byte unchanged.
+          - non-nn.Module results: no-op, so config / tokenizer /
+            processor classes that also use this mixin are untouched.
+          - sharded or non-safetensors checkpoints: no-op (no local
+            model.safetensors to reload from).
+        Best-effort: never raises; a failed repair just logs.
+        See huggingface/transformers#46620.
+        """
+        try:
+            import transformers
+
+            if int(transformers.__version__.split(".")[0]) < 5:
+                return
+            import torch
+
+            if not isinstance(result, torch.nn.Module):
+                return
+            weights_file = os.path.join(local_path, "model.safetensors")
+            if not os.path.exists(weights_file):
+                return
+            from safetensors.torch import load_file
+
+            result.load_state_dict(load_file(weights_file), strict=False)
+        except Exception as e:  # noqa: BLE001 -- never break loading on repair
+            logger.warning(f"weight re-materialization skipped: {e}")

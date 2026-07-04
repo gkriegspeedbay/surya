@@ -45,6 +45,7 @@ class SuryaDecoderConfig(PretrainedConfig):
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
+        pad_token_id=None,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -79,5 +80,6 @@ class SuryaDecoderConfig(PretrainedConfig):
 
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
+            pad_token_id=pad_token_id,
             **kwargs,
         )

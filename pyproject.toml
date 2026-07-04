@@ -18,7 +18,11 @@ torch = "^2.7.0"
 pydantic = "^2.5.3"
 pydantic-settings = "^2.1.0"
 python-dotenv = "^1.0.0"
-pillow = "^10.2.0"
+# Relaxed from "^10.2.0" (<11) per datalab-to/surya#519: no removed-in-11 API
+# usage found (Image.ANTIALIAS / ImageDraw.textsize / ImageFont.getsize), full
+# test suite green on 12.2.0. Needed for CVE fixes (12.1.1+) unreachable under
+# the old cap.
+pillow = ">=10.2.0,<13"
 pypdfium2 = "=4.30.0"
 filetype = "^1.2.0"
 click = "^8.1.8"

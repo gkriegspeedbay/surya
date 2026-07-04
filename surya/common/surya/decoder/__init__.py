@@ -18,6 +18,7 @@ from transformers.utils import (
     logging,
 )
 
+from surya.common.transformers_compat import copy_ as hf_init_copy_
 from surya.common.pretrained import SuryaPreTrainedModel
 from surya.common.surya.decoder.config import SuryaDecoderConfig
 
@@ -343,11 +344,36 @@ class Qwen2RotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        # transformers >= 5.0 removed the "default" key from ROPE_INIT_FUNCTIONS
+        # (github.com/huggingface/transformers/issues/46620 fallout) -- PreTrainedModel
+        # ._init_weights now expects a bound compute_default_rope_parameters method
+        # instead. Mirror that convention here so the registry lookup and the
+        # _init_weights auto-recompute path (below) share the same function.
+        self.rope_init_fn = (
+            ROPE_INIT_FUNCTIONS[self.rope_type]
+            if self.rope_type != "default"
+            else self.compute_default_rope_parameters
+        )
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
+
+    def compute_default_rope_parameters(self, config=None, device=None, seq_len=None):
+        """Vendored replacement for the "default" entry transformers >= 5.0
+        removed from ROPE_INIT_FUNCTIONS. Bit-exact with the pre-removal
+        computation; config-driven, no registry dependency."""
+        cfg = config or self.config
+        base = cfg.rope_theta
+        dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
+        inv_freq = 1.0 / (
+            base
+            ** (
+                torch.arange(0, dim, 2, dtype=torch.int64, device=device).float()
+                / dim
+            )
+        )
+        return inv_freq, 1.0
 
     def _dynamic_frequency_update(self, position_ids, device):
         """
@@ -431,6 +457,20 @@ class Qwen2PreTrainedModel(SuryaPreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
+        elif "RotaryEmbedding" in module.__class__.__name__ and hasattr(
+            module, "original_inv_freq"
+        ):
+            # This override replaces PreTrainedModel._init_weights entirely
+            # (no super() call), so the base class's own RotaryEmbedding
+            # auto-recompute branch never runs -- inv_freq is persistent=False
+            # and has nothing in the checkpoint to fall back on, so without
+            # this branch it stays an uninitialized meta tensor after
+            # from_pretrained under transformers >= 5.0. Verified bit-exact
+            # against a fresh computation (see huggingface/transformers#46620).
+            rope_fn = module.compute_default_rope_parameters
+            buffer_value, _ = rope_fn(getattr(module, "config", None))
+            hf_init_copy_(module.inv_freq, buffer_value)
+            hf_init_copy_(module.original_inv_freq, buffer_value)
 
 
 class SuryaDecoderModel(Qwen2PreTrainedModel):
