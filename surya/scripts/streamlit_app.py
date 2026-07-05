@@ -185,12 +185,9 @@ def open_pdf(pdf_file):
 @st.cache_data()
 def get_page_image(pdf_file, page_num, dpi=settings.IMAGE_DPI):
     doc = open_pdf(pdf_file)
-    renderer = doc.render(
-        pypdfium2.PdfBitmap.to_pil,
-        page_indices=[page_num - 1],
-        scale=dpi / 72,
-    )
-    png = list(renderer)[0]
+    # pypdfium2 >= 5.0 removed PdfDocument.render(); use PdfPage.render()
+    # directly since this only ever renders a single page anyway.
+    png = doc[page_num - 1].render(scale=dpi / 72).to_pil()
     png_image = png.convert("RGB")
     doc.close()
     return png_image

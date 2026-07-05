@@ -23,11 +23,32 @@ python-dotenv = "^1.0.0"
 # test suite green on 12.2.0. Needed for CVE fixes (12.1.1+) unreachable under
 # the old cap.
 pillow = ">=10.2.0,<13"
-pypdfium2 = "=4.30.0"
+# Bumped from "=4.30.0" (STANDARDS SS6.9.1 bump flow: reviewed the full
+# pypdfium2 changelog 4.30.0->5.11.0. One relevant breaking change --
+# PdfDocument.render() removed in 5.0.0 -- fixed in surya/scripts/
+# streamlit_app.py and texify_app.py (switched to PdfPage.render(), which
+# surya/input/processing.py already used correctly). Full test suite green.
+# PINNED TO 5.9.0, NOT THE PYPI-LATEST 5.11.0: marker's OTHER direct
+# dependency pdftext hard-pins pypdfium2 to an EXACT version too (their own
+# comment: "every pypdfium2 minor swaps the pdfium binary and silently
+# changes extraction output" -- deliberate, not an oversight). pdftext's
+# latest release (0.7.0) pins exactly 5.9.0; matching it here is what
+# actually makes marker+pdftext+surya resolve together at all. 5.9.0 is
+# the real achievable "latest" for this dependency given the full graph,
+# not pypdfium2's own standalone PyPI latest.
+pypdfium2 = "=5.9.0"
 filetype = "^1.2.0"
 click = "^8.1.8"
 platformdirs = "^4.3.6"
-opencv-python-headless = "==4.11.0.86"
+# Bumped from "==4.11.0.86" (STANDARDS SS6.9.1 bump flow: reviewed OpenCV's
+# 4-to-5 migration guide against surya's actual cv2 usage across all 5
+# call sites -- no relevant breaking change found (no INTER_NEAREST, no
+# warp*, no C-API/DNN/ML/calib3d/VideoCapture/text-rendering calls; the
+# one plausible touchpoint, 1D-array-to-Mat semantics, doesn't apply since
+# surya always builds explicit 2D arrays before calling cv2). Full test
+# suite green, including the detection path that exercises
+# connectedComponentsWithStats -> minAreaRect -> boxPoints.
+opencv-python-headless = "==5.0.0.93"
 einops = "^0.8.1"
 pre-commit = "^4.2.0"
 
