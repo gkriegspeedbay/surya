@@ -11,30 +11,6 @@ from transformers import apply_chunking_to_forward
 from transformers.activations import get_activation
 from transformers.modeling_outputs import BaseModelOutput, SequenceClassifierOutput
 from transformers.pytorch_utils import prune_linear_layer
-
-try:
-    from transformers.pytorch_utils import find_pruneable_heads_and_indices
-except ImportError:
-    # transformers >= 5.0 removed this helper from pytorch_utils
-    # (https://github.com/datalab-to/surya/issues/492). Vendor the
-    # historical implementation so head pruning keeps working under 5.x.
-    # It is only invoked if MultiHeadSelfAttention.prune_heads() is called
-    # -- which surya inference never does -- but the import must resolve
-    # for this module to load at all.
-    from typing import List as _List, Set as _Set
-
-    def find_pruneable_heads_and_indices(
-        heads: _List[int], n_heads: int, head_size: int, already_pruned_heads: _Set[int]
-    ):
-        mask = torch.ones(n_heads, head_size)
-        heads = set(heads) - already_pruned_heads
-        for head in heads:
-            head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
-            mask[head] = 0
-        mask = mask.view(-1).contiguous().eq(1)
-        index = torch.arange(len(mask))[mask].long()
-        return heads, index
-
 from transformers.utils import (
     is_flash_attn_greater_or_equal_2_10,
 )
@@ -42,6 +18,7 @@ from transformers.utils import (
 from surya.common.pretrained import SuryaPreTrainedModel
 
 from surya.common.s3 import S3DownloaderMixin
+from surya.common.transformers_compat import find_pruneable_heads_and_indices
 from surya.ocr_error.model.config import DistilBertConfig
 
 
@@ -82,11 +59,9 @@ class Embeddings(nn.Module):
 
         self.LayerNorm = nn.LayerNorm(config.dim, eps=1e-12)
         self.dropout = nn.Dropout(config.dropout)
-        self.register_buffer(
-            "position_ids",
-            torch.arange(config.max_position_embeddings).expand((1, -1)),
-            persistent=False,
-        )
+        # No position_ids buffer here (removed): forward() below computes
+        # position_ids fresh via torch.arange every call instead of caching
+        # a persistent=False buffer, so a cached buffer would be dead weight.
 
     def forward(
         self, input_ids: torch.Tensor, input_embeds: Optional[torch.Tensor] = None

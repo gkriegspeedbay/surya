@@ -11,6 +11,7 @@ from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 
 from surya.common.pretrained import SuryaPreTrainedModel
 from surya.common.s3 import S3DownloaderMixin
+from surya.common.transformers_compat import is_transformers_5_plus
 from surya.common.surya.config import SuryaModelConfig
 from surya.common.surya.decoder import SuryaDecoderModel
 from surya.common.surya.embedder import SimpleTokenEmbedder
@@ -182,9 +183,7 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
         # above (get_expanded_tied_weights_keys). Delegate to it there;
         # keep the old manual path for transformers < 5.
         # See huggingface/transformers#46620.
-        import transformers
-
-        if int(transformers.__version__.split(".")[0]) >= 5:
+        if is_transformers_5_plus():
             super().tie_weights(**kwargs)
         else:
             self._tie_weights()

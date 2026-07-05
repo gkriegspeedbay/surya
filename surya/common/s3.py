@@ -9,6 +9,7 @@ from pathlib import Path
 import requests
 from tqdm import tqdm
 
+from surya.common.transformers_compat import is_transformers_5_plus
 from surya.logging import get_logger
 from surya.settings import settings
 
@@ -204,13 +205,24 @@ class S3DownloaderMixin:
             processor classes that also use this mixin are untouched.
           - sharded or non-safetensors checkpoints: no-op (no local
             model.safetensors to reload from).
-        Best-effort: never raises; a failed repair just logs.
+
+        KNOWN GAP: only reliably repairs the s3:// load path, where
+        `local_path` is guaranteed to be the real download directory. For
+        the non-s3:// (bare Hub id) branch of from_pretrained, `local_path`
+        is the original `pretrained_model_name_or_path` string as passed by
+        the caller, not a resolved local cache directory -- os.path.join
+        against it will not find model.safetensors, so this no-ops and the
+        transformers >= 5.0 bug is NOT repaired for that path. Every
+        shipped surya *_MODEL_CHECKPOINT setting uses s3://, so this gap is
+        dormant for surya's own loaders; it only bites a caller that
+        overrides a checkpoint to a bare Hub id under transformers >= 5.0.
+        Best-effort: never raises; a failed repair just logs (loudly, at
+        error level, since a failure here silently reintroduces the exact
+        random-init bug this function exists to fix).
         See huggingface/transformers#46620.
         """
         try:
-            import transformers
-
-            if int(transformers.__version__.split(".")[0]) < 5:
+            if not is_transformers_5_plus():
                 return
             import torch
 
@@ -218,9 +230,29 @@ class S3DownloaderMixin:
                 return
             weights_file = os.path.join(local_path, "model.safetensors")
             if not os.path.exists(weights_file):
+                if not local_path.startswith(("/", "\\")) and ":" not in local_path[:3]:
+                    # Looks like a bare Hub repo id (e.g. "org/model"), not a
+                    # resolved local path -- the known gap above, not the
+                    # ordinary "sharded/non-safetensors checkpoint" case.
+                    logger.warning(
+                        f"transformers >= 5.0 weight-materialization repair skipped: "
+                        f"'{local_path}' looks like a Hub repo id, not a local "
+                        f"checkpoint directory, so no model.safetensors was found to "
+                        f"reload from. Model weights may still be at random "
+                        f"initialization (huggingface/transformers#46620). This repair "
+                        f"only reliably covers surya's s3:// checkpoint loading path."
+                    )
                 return
             from safetensors.torch import load_file
 
             result.load_state_dict(load_file(weights_file), strict=False)
         except Exception as e:  # noqa: BLE001 -- never break loading on repair
-            logger.warning(f"weight re-materialization skipped: {e}")
+            # error, not warning: a failure HERE (e.g. a shape-mismatched or
+            # corrupt local safetensors file) silently reintroduces the exact
+            # random-init bug this function exists to fix, so it must not be
+            # easy to miss in log output.
+            logger.error(
+                f"transformers >= 5.0 weight-materialization repair FAILED for "
+                f"'{local_path}': {e}. Model weights may still be at random "
+                f"initialization (huggingface/transformers#46620)."
+            )

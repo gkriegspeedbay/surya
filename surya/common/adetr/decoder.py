@@ -70,7 +70,13 @@ class SuryaADETRDecoderRotaryEmbedding(nn.Module):
             ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim)
         )
         self.register_buffer("inv_freq", tensor=inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        # Registered (not a plain attribute) so transformers >= 5.0's
+        # meta-device from_pretrained can materialize it -- an unregistered
+        # attribute is invisible to the buffer-swap machinery and stays a
+        # true meta tensor forever, crashing on first read. Verified
+        # empirically. Unread in this file's forward() today, so this was a
+        # dormant bug, not an active one.
+        self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
 
     def compute_default_rope_parameters(self, config=None):
         """persistent=False, so inv_freq has nothing in the checkpoint to
@@ -616,7 +622,10 @@ class SuryaADETRDecoderPreTrainedModel(SuryaPreTrainedModel):
             # this branch it stays an uninitialized meta tensor after
             # from_pretrained under transformers >= 5.0. Verified bit-exact
             # against a fresh computation (see huggingface/transformers#46620).
-            rope_fn = module.compute_default_rope_parameters
+            # Prefer rope_init_fn if the class ever grows dynamic rope-type
+            # dispatch (this one hardcodes "default" today, so this is
+            # defensive, matching common/surya/decoder/__init__.py's class).
+            rope_fn = getattr(module, "rope_init_fn", None) or module.compute_default_rope_parameters
             buffer_value, _ = rope_fn(getattr(module, "config", None))
             hf_init_copy_(module.inv_freq, buffer_value)
             hf_init_copy_(module.original_inv_freq, buffer_value)

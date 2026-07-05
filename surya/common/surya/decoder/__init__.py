@@ -357,7 +357,15 @@ class Qwen2RotaryEmbedding(nn.Module):
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        # Registered (not a plain attribute) so transformers >= 5.0's
+        # meta-device from_pretrained can materialize it: an unregistered
+        # attribute is invisible to the buffer-swap machinery and stays a
+        # true meta tensor forever, crashing (NotImplementedError: Cannot
+        # copy out of meta tensor) the moment anything reads it -- verified
+        # empirically. Only _dynamic_frequency_update reads this today (the
+        # "dynamic" rope_type path, unused by any shipped surya config), so
+        # this was previously a dormant bug, not an active one.
+        self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
 
     def compute_default_rope_parameters(self, config=None, device=None, seq_len=None):
         """Vendored replacement for the "default" entry transformers >= 5.0
@@ -365,7 +373,9 @@ class Qwen2RotaryEmbedding(nn.Module):
         computation; config-driven, no registry dependency."""
         cfg = config or self.config
         base = cfg.rope_theta
-        dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
+        partial_rotary_factor = getattr(cfg, "partial_rotary_factor", 1.0)
+        head_dim = getattr(cfg, "head_dim", None) or cfg.hidden_size // cfg.num_attention_heads
+        dim = int(head_dim * partial_rotary_factor)
         inv_freq = 1.0 / (
             base
             ** (
@@ -467,7 +477,12 @@ class Qwen2PreTrainedModel(SuryaPreTrainedModel):
             # this branch it stays an uninitialized meta tensor after
             # from_pretrained under transformers >= 5.0. Verified bit-exact
             # against a fresh computation (see huggingface/transformers#46620).
-            rope_fn = module.compute_default_rope_parameters
+            # Prefer the module's own resolved rope_init_fn (set in __init__
+            # via ROPE_INIT_FUNCTIONS[rope_type] for non-default rope types,
+            # e.g. a future long-context/YaRN checkpoint) over the hardcoded
+            # default -- using compute_default_rope_parameters unconditionally
+            # would silently drop any configured RoPE scaling.
+            rope_fn = getattr(module, "rope_init_fn", None) or module.compute_default_rope_parameters
             buffer_value, _ = rope_fn(getattr(module, "config", None))
             hf_init_copy_(module.inv_freq, buffer_value)
             hf_init_copy_(module.original_inv_freq, buffer_value)
