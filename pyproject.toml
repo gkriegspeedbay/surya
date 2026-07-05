@@ -12,9 +12,30 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.10"
+# Tightened upper bound from "^3.10" (>=3.10,<4.0) to <3.15 -- the torch
+# 2.12.0/2.12.1 bump surfaced that torch's own triton dependency (3.7.0/
+# 3.7.1) declares python<3.15, so poetry lock correctly refused to resolve
+# against the old open-ended <4.0 claim. This fork has never actually been
+# tested past 3.14 (that's the whole point of this compat pass), so <4.0
+# was never an honest claim to begin with; tightening it to match what the
+# dependency graph actually supports, not a new restriction in practice.
+python = ">=3.10,<3.15"
 transformers = ">=4.56.1"
-torch = "^2.7.0"
+# Bumped from "^2.7.0" (STANDARDS SS6.9.1 bump flow: caret-frozen the same way
+# as the AI-SDK deps in the marker fork). Reviewed the full 2.7.1->2.12.1
+# changelog (5 minor releases) against this fork's actual torch usage
+# (register_buffer(persistent=False), nn.Parameter/nn.init.*, .to(device/
+# dtype), torch.autocast(enabled=False) for RoPE, and the meta-tensor-safe
+# copy_() wrapper this fork added for transformers-5.x compat) -- no
+# breaking or semantic change found to any of those APIs across the range.
+# Real changes in this span (torch.export/ONNX API churn, CUDA-13.0-default-
+# wheel dropping pre-Turing GPU support, source-build CUDA floor -> 12.6,
+# Python floor -> 3.10 (already satisfied above)) don't touch code this fork
+# calls: no torch.export/torch.onnx usage anywhere, wheels are installed
+# prebuilt (not built from source), and this fork's actual deploy targets
+# are Turing-or-newer workstation GPUs, not legacy Maxwell/Pascal/Volta
+# datacenter cards.
+torch = "^2.12.0"
 pydantic = "^2.5.3"
 pydantic-settings = "^2.1.0"
 python-dotenv = "^1.0.0"
@@ -59,7 +80,10 @@ pymupdf = "^1.23.8"
 datasets = "^2.16.1"
 rapidfuzz = "^3.6.1"
 streamlit = "^1.31.0"
-pytest = "^8.3.4"
+# Bumped from "^8.3.4" (STANDARDS SS6.9.1: caret-frozen below 9.0.0). pytest
+# 9.0's breaking changes concern parametrize/async-test/bare-yield/non-None-
+# return semantics this fork's test suite doesn't use.
+pytest = "^9.1.1"
 # Bumped from "^0.5.1" (STANDARDS SS6.9.1 bump flow: caught by `poetry lock`
 # failing to resolve -- pdftext 0.5.1 hard-pins pypdfium2==4.30.0, which
 # conflicts with the pypdfium2 =5.9.0 bump above. Matches the ~0.7.0 marker
