@@ -60,7 +60,13 @@ datasets = "^2.16.1"
 rapidfuzz = "^3.6.1"
 streamlit = "^1.31.0"
 pytest = "^8.3.4"
-pdftext = "^0.5.1"
+# Bumped from "^0.5.1" (STANDARDS SS6.9.1 bump flow: caught by `poetry lock`
+# failing to resolve -- pdftext 0.5.1 hard-pins pypdfium2==4.30.0, which
+# conflicts with the pypdfium2 =5.9.0 bump above. Matches the ~0.7.0 marker
+# uses; reviewed the same way (all 18 commits between v0.6.3 and v0.7.0
+# reviewed for the marker bump -- no breaking change to any API surya's
+# dev/benchmark usage of pdftext would call).
+pdftext = "^0.7.0"
 tabulate = "^0.9.0"
 
 [tool.poetry.scripts]
