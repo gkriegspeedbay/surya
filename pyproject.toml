@@ -43,7 +43,29 @@ python-dotenv = "^1.0.0"
 # usage found (Image.ANTIALIAS / ImageDraw.textsize / ImageFont.getsize), full
 # test suite green on 12.2.0. Needed for CVE fixes (12.1.1+) unreachable under
 # the old cap.
-pillow = ">=10.2.0,<13"
+# Raised <13 -> <14 (py314-compat.2) for the nine Pillow advisories fixed
+# only in 13.0.0 (CVE-2026-112395/-112397/-112400/-112403/-112404/-112895/
+# -112896/-112897/-112899). 13.0.0 release notes reviewed against every PIL
+# call site: none uses a removed API. Three behaviour changes reach surya:
+# (1) ImageOps.pad now keeps info["transparency"] (detection/util.py):
+# unreachable in effect, as the input is always convert("RGB")'d first and
+# the padded image is read only through np.asarray (probe: identical bytes).
+# (2) Resize ordering (Pillow PR #9549): when the height is scaled down much
+# more than the width, resize() now works vertically first, so resize()/
+# thumbnail() results can differ (content-dependent per-pixel
+# differences) for images much taller than wide. No API break.
+# Every PIL resize()/thumbnail() call in this fork's code (git grep) can
+# differ: detection/__init__.py prepare_image (all detection input),
+# scripts/texify_app.py:78,121 (texify_gui), benchmark/utils/tatr.py:15.
+# Example only, synthetic text page, not a bound: at 600x1400, 11.6% of
+# the prepared 1200x1200 detector array's pixels differ, max 23/255.
+# (3) Decoder fixes and hardening reach Image.open on user-supplied files
+# (input/load.py:37, debug/text.py:67, the streamlit/texify apps):
+# malformed files may now raise (13.0.0 changelog), and a few rare
+# formats decode differently (probe: FITS 16-bit pixel values change, XBM
+# files with C comments now open instead of raising).
+# This suite's tests all load the models and were not re-run on 13.0.0.
+pillow = ">=10.2.0,<14"
 # Bumped from "=4.30.0" (STANDARDS SS6.9.1 bump flow: reviewed the full
 # pypdfium2 changelog 4.30.0->5.11.0. One relevant breaking change --
 # PdfDocument.render() removed in 5.0.0 -- fixed in surya/scripts/
